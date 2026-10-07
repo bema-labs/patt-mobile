@@ -3,7 +3,7 @@
 // what's left on counted tasks' daily targets, This week = weekly target minus
 // counted time. No build step, no libraries.
 
-const VERSION = "1.3.0";
+const VERSION = "1.4.0";
 const UPSERT = "resolution=merge-duplicates,return=minimal";
 const MOODS = [["Productive", "#30d158"], ["Focused", "#0a84ff"], ["Okay", "#8e8e93"],
                ["Distracted", "#ff9f0a"], ["Unmotivated", "#ff453a"], ["Tired", "#bf5af2"]];
@@ -40,6 +40,8 @@ const S = {
   sheetTask: null, padValue: "",
   slipUndo: null,                           // {task, uuid, until}: the slip a second tap undoes
   ci: { since: null, at: 0, paused: null }, // check-in: asked for which stretch, when; paused session
+  mgr: null,                                // set-up screen state: {tab, edit, showArchived, msg}
+  welcomed: LS.get("welcomed", false),
 };
 
 // -------------------------------------------------------------- time -----
@@ -181,6 +183,7 @@ async function load() {
     LS.set("cache", S.data);
     S.lastSync = now(); LS.set("lastSync", S.lastSync);
     setStatus("ok");
+    if (!views.length) firstRun();                 // a brand-new account
   } catch (e) {
     if (e instanceof AuthErr) { setStatus("signedout"); }
     else if (e instanceof NetErr) { setStatus("offline"); }
@@ -273,7 +276,11 @@ function renderAll() {
     app.innerHTML = `
       <div id="main">
         <div id="head" class="head"></div>
-        <div id="seg" class="seg"></div>
+        <div class="cols"><div class="colL"><div id="seg" class="seg"></div>
+        <div id="tiles" class="tiles"></div>
+        <section class="card" id="exCard"><div class="caps">Exercise <span class="faint">· this week</span></div><div id="ex" class="ex"></div></section>
+        <section class="card" id="avCard"><div class="caps">Not-to-do <span class="faint">· today</span></div><div id="av" class="ex"></div></section>
+        </div><div class="colR">
         <section class="card" id="now">
           <div class="row2" style="margin-top:0"><span class="caps">Now</span><span id="ciChip" class="chip"></span></div>
           <div class="now-row" style="margin-top:6px"><span id="nowDot" class="dot"></span><span id="nowName" class="now-name"></span></div>
@@ -286,20 +293,27 @@ function renderAll() {
           <div id="notes" class="notes"></div>
         </section>
         <section class="card" id="counters"></section>
-        <div id="tiles" class="tiles"></div>
-        <section class="card"><div class="caps">Exercise <span class="faint">· this week</span></div><div id="ex" class="ex"></div></section>
-        <section class="card"><div class="caps">Not-to-do <span class="faint">· today</span></div><div id="av" class="ex"></div></section>
-        <section class="card"><div class="row2" style="margin-top:0"><span class="caps">Mood</span><span id="moodLast" class="small faint"></span></div>
+        <section class="card" id="moodCard"><div class="row2" style="margin-top:0"><span class="caps">Mood</span><span id="moodLast" class="small faint"></span></div>
           <div id="moods" class="moods"></div></section>
+        </div></div>
         <div id="foot" class="footer"></div>
       </div>`;
     $("#stopBtn").onclick = () => stopRunning();
     $("#noteForm").onsubmit = e => { e.preventDefault(); addNote(); };
-    $("#tiles").onclick = e => { const b = e.target.closest("[data-task]"); if (b) tapTask(b.dataset.task); };
+    $("#tiles").onclick = e => {
+      if (e.target.closest("[data-new]")) return openEditor("task", null, "time");
+      const b = e.target.closest("[data-task]"); if (b) tapTask(b.dataset.task);
+    };
     $("#seg").onclick = e => { const b = e.target.closest("[data-view]"); if (b) { S.view = b.dataset.view; LS.set("view", S.view); renderAll(); } };
     $("#moods").onclick = e => { const b = e.target.closest("[data-mood]"); if (b) logMood(b.dataset.mood); };
-    $("#ex").onclick = e => { const b = e.target.closest("[data-ex]"); if (b) openPad(b.dataset.ex); };
-    $("#av").onclick = e => { const b = e.target.closest("[data-av]"); if (b) logSlip(b.dataset.av); };
+    $("#ex").onclick = e => {
+      if (e.target.closest("[data-new]")) return openEditor("task", null, "reps");
+      const b = e.target.closest("[data-ex]"); if (b) openPad(b.dataset.ex);
+    };
+    $("#av").onclick = e => {
+      if (e.target.closest("[data-new]")) return openEditor("task", null, "avoid");
+      const b = e.target.closest("[data-av]"); if (b) logSlip(b.dataset.av);
+    };
     $("#foot").onclick = e => { if (e.target.id === "signOut") signOut(); };
   }
   renderHead(); renderSeg(); renderNow(); renderTiles(); renderEx(); renderAv(); renderMoods(); live();
@@ -316,8 +330,10 @@ function renderHead() {
                 error: "Sync problem", signedout: "Signed out", idle: "" }[S.status] || "";
   h.innerHTML = `<div><h1>${d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" })}</h1>
       <div class="sub" id="totals"></div></div>
-    <button class="sync" id="syncPill" title="${esc(S.error)}"><span class="dot ${dots[S.status] || ""}"></span>${esc(txt)}</button>`;
+    <div class="head-r"><button class="sync" id="syncPill" title="${esc(S.error)}"><span class="dot ${dots[S.status] || ""}"></span>${esc(txt)}</button>
+    <button class="icon-btn" id="mgrBtn" aria-label="Tasks and settings" title="Tasks and settings">${ICON_SLIDERS}</button></div>`;
   $("#syncPill").onclick = () => load();
+  $("#mgrBtn").onclick = () => openManage();
 }
 
 function renderSeg() {
@@ -372,7 +388,9 @@ function renderTiles() {
       <div class="t-run" style="color:${t.color}" data-live="run">${i.runTxt}</div>
       <div class="t-big" data-live="big" style="${i.done ? "color:var(--good)" : ""}">${i.big}<small>${i.suf}</small></div>
       <div class="t-meta" data-live="meta">${esc(i.meta)}</div></button>`;
-  }).join("") : `<div class="card muted" style="grid-column:1/-1">No tasks in this view yet. Add them in PATT on your PC.</div>`;
+  }).join("") : `<div class="card empty" style="grid-column:1/-1"><div class="empty-t">No tasks here yet</div>
+      <div class="muted small">Add a project or job you want to track time against.</div>
+      <button class="btn pill" data-new="time">Add a task</button></div>`;
 }
 
 function renderCounters(c) {
@@ -430,7 +448,8 @@ function renderEx() {
               : best ? `<span class="rec">Best ${fmtQty(best, t.unit)}</span>` : `<span class="rec">&nbsp;</span>`;
     return `<button data-ex="${t.uuid}"><div class="small muted"><span class="dot" style="background:${t.color};width:7px;height:7px"></span> ${esc(t.name)}</div>
       <div class="val" style="${cur ? "" : "color:var(--faint)"}">${fmtQty(cur, t.unit)}</div>${rec}</button>`;
-  }).join("") : `<div class="muted small">Add exercises in PATT on your PC (Tasks → New task → Reps / count).</div>`;
+  }).join("") : `<div class="muted small empty-row">Push-ups, a run, anything you count.
+      <button class="chip-btn" data-new="reps">+ Add</button></div>`;
   void w1;
 }
 
@@ -446,8 +465,8 @@ function renderAv() {
     return `<button data-av="${t.uuid}"><div class="small muted"><span class="dot" style="background:${t.color};width:7px;height:7px"></span> ${esc(t.name)}</div>
       <div class="val" style="color:${today ? "var(--slip)" : "var(--good)"}">${today ? today + "×" : "Clean"}</div>
       <span class="rec">${esc(sub)}</span></button>`;
-  }).join("") : `<div class="muted small">Things to stay away from, like YouTube. Add them in PATT on your PC
-      (Tasks → New task → Not-to-do), then tap one here when you slip.</div>`;
+  }).join("") : `<div class="muted small empty-row">Things to stay away from, like YouTube. Tap one when you slip.
+      <button class="chip-btn" data-new="avoid">+ Add</button></div>`;
 }
 
 function renderMoods() {
@@ -760,6 +779,324 @@ async function logReps(t, v) {
   LS.set("cache", S.data);
 }
 
+// ------------------------------------------------------------ set-up ----
+// Everything the PC can set up, here too: tasks (timed, exercise, not-to-do), views
+// and the check-in timings. New accounts get a starter view and a short welcome.
+const COLORS = ["#0a84ff", "#30d158", "#ff9f0a", "#ff453a", "#bf5af2", "#64d2ff", "#ff375f", "#ffd60a", "#5e5ce6", "#8e8e93"];
+const ICON_SLIDERS = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"
+  stroke-linecap="round"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>`;
+const KIND_LABEL = { time: "Timed", reps: "Exercise", avoid: "Not-to-do" };
+const STARTERS = [["time", "Deep work"], ["time", "Admin & email"], ["time", "Meetings"], ["time", "Study"],
+                  ["reps", "Push-ups"], ["reps", "Run", "km"], ["avoid", "YouTube", "youtube"],
+                  ["avoid", "Social media", "facebook, instagram, tiktok"]];
+
+// Same id for a setting on every device (matches the PC's uuid5 of "patt-pref:<key>").
+async function uuid5(name, ns = "6ba7b811-9dad-11d1-80b4-00c04fd430c8") {
+  const nsb = ns.replace(/-/g, "").match(/../g).map(h => parseInt(h, 16));
+  const data = new Uint8Array([...nsb, ...new TextEncoder().encode(name)]);
+  const h = new Uint8Array(await crypto.subtle.digest("SHA-1", data)).slice(0, 16);
+  h[6] = (h[6] & 0x0f) | 0x50; h[8] = (h[8] & 0x3f) | 0x80;
+  const x = [...h].map(b => b.toString(16).padStart(2, "0")).join("");
+  return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20)}`;
+}
+
+// Durations as on the PC: "2" = 2h (up to `upto`), "1:30", "45m", "2h 15m"; returns minutes.
+function parseDur(text, upto) {
+  const t = String(text || "").trim().toLowerCase();
+  if (!t) return null;
+  if (t.includes(":")) {
+    const [h, m] = t.split(":"), H = Number(h || 0), M = Number(m || 0);
+    if (!Number.isInteger(H) || !Number.isInteger(M) || H < 0 || M < 0 || M >= 60) throw new Error(text);
+    return H * 60 + M;
+  }
+  if (/^\d+(\.\d+)?$/.test(t)) { const v = Number(t); return v <= upto || (t.includes(".") && v <= 24) ? v * 60 : v; }
+  const m = t.match(/^(?:(\d+(?:\.\d+)?)\s*h)?\s*(?:(\d+(?:\.\d+)?)\s*m)?$/);
+  if (m && (m[1] || m[2])) return Number(m[1] || 0) * 60 + Number(m[2] || 0);
+  throw new Error(text);
+}
+const fmtMin = m => m == null ? "" : fmtHM(m * 60);
+const nextOrder = list => list.reduce((a, x) => Math.max(a, x.sort_order || 0), 0) + 1;
+function nextColor() { return COLORS[D().tasks.length % COLORS.length]; }
+
+async function saveRow(table, row, isNew) {
+  const list = D()[table];
+  const i = list.findIndex(x => x.uuid === row.uuid);
+  if (i >= 0) list[i] = { ...list[i], ...row }; else list.push(row);
+  LS.set("cache", S.data);
+  const { uuid: u, ...fields } = row;
+  await enqueue(isNew ? { m: "POST", p: `${table}?on_conflict=user_id,uuid`, b: [row], prefer: UPSERT }
+                      : { m: "PATCH", p: `${table}?uuid=eq.${u}`, b: fields, prefer: "return=minimal" });
+}
+function newTask(kind, name, extra = {}) {
+  const v = selectedViews()[0] || viewList()[0];
+  return { uuid: uuid(), name, project: "", kind, daily_target: null, weekly_target: null, weekdays_only: 0,
+           color: kind === "avoid" ? "#ff375f" : nextColor(), sort_order: nextOrder(D().tasks), archived: 0, created_at: now(),
+           view_uuid: kind === "time" && v ? v.uuid : null, billable: kind === "time" ? 1 : 0,
+           unit: "reps", keywords: "", ...extra };
+}
+
+// first run: a starter view (like the PC's) and a welcome with a few ideas
+let starting = false;
+async function firstRun() {
+  if (starting || D().views.length) return;
+  starting = true;
+  const v = { uuid: uuid(), name: "Work", weekly_target: 30 * 60, plan: "360,360,360,360,360,0,0", sort_order: 0, archived: 0 };
+  S.view = v.uuid; LS.set("view", S.view);
+  try { await saveRow("views", v, true); } finally { starting = false; }
+  renderAll();
+  if (!D().tasks.length && !S.welcomed) openManage("welcome");
+}
+
+function openManage(tab = "tasks") {
+  S.mgr = { tab, edit: null, showArchived: false, picked: new Set(), msg: "" };
+  renderManage();
+  $("#mgr").classList.remove("hidden");
+}
+function openEditor(type, u, kind) {
+  if (!S.mgr) S.mgr = { tab: "tasks", showArchived: false, picked: new Set(), msg: "", direct: true };
+  S.mgr.edit = { type, uuid: u, kind };
+  S.mgr.msg = "";
+  renderManage();
+  $("#mgr").classList.remove("hidden");
+}
+function closeManage() { $("#mgr").classList.add("hidden"); $("#mgr").innerHTML = ""; S.mgr = null; renderAll(); }
+function backFromEditor() { if (S.mgr.direct) return closeManage(); S.mgr.edit = null; S.mgr.msg = ""; renderManage(); }
+
+function renderManage() {
+  const m = S.mgr, el = $("#mgr");
+  if (!m) return;
+  if (m.edit) return renderEditor();
+  if (m.tab === "welcome") return renderWelcome();
+  const tabs = [["tasks", "Tasks"], ["views", "Views"], ["settings", "Settings"]];
+  let body = "";
+  if (m.tab === "tasks") {
+    const live = D().tasks.filter(t => !t.archived), gone = D().tasks.filter(t => t.archived);
+    const group = (title, list) => list.length ? `<div class="grp">${esc(title)}</div><div class="list">${list.map(rowFor).join("")}</div>` : "";
+    body = viewList().map(v => group(v.name, live.filter(t => isTimed(t) && t.view_uuid === v.uuid))).join("")
+      + group("Timed, no view", live.filter(t => isTimed(t) && !viewList().some(v => v.uuid === t.view_uuid)))
+      + group("Exercise", live.filter(t => t.kind === "reps")) + group("Not-to-do", live.filter(t => t.kind === "avoid"))
+      + (live.length ? "" : `<p class="muted small">Nothing yet. Add the projects you work on, exercise you count, or things to avoid.</p>`)
+      + (gone.length ? `<button class="link block" data-act="arch">${m.showArchived ? "Hide" : "Show"} archived (${gone.length})</button>
+         ${m.showArchived ? `<div class="list">${gone.map(rowFor).join("")}</div>` : ""}` : "")
+      + `<button class="btn" data-act="new-task">New task</button>`;
+  } else if (m.tab === "views") {
+    body = `<p class="muted small">Each view has its own tiles and weekly hours target, e.g. Work and Personal.</p>
+      <div class="list">${D().views.filter(v => !v.archived).map(v => `<button class="row" data-edit-view="${v.uuid}">
+        <span class="row-main"><b>${esc(v.name)}</b><span class="faint small">${v.weekly_target ? fmtMin(v.weekly_target) + " a week" : "No weekly target"}</span></span><span class="chev">›</span></button>`).join("")}</div>
+      <button class="btn" data-act="new-view">New view</button>`;
+  } else {
+    const [a, b] = ciLimits();
+    body = `<div class="grp">Note check-ins</div>
+      <div class="form-card">
+        <label class="tog"><input type="checkbox" id="setOn" ${pref("checkin_on") === "1" ? "checked" : ""}> While a timer runs, ask what I've been working on</label>
+        <label class="fld"><span>Ask after</span><input id="setAsk" inputmode="numeric" value="${a}"><em>minutes without a note</em></label>
+        <label class="fld"><span>Pause the timer after</span><input id="setPause" inputmode="numeric" value="${b}"><em>minutes if there's still no note</em></label>
+        <p class="faint small">Breaks (tasks that don't count toward hours) are never paused. The same settings apply on your PC.</p>
+      </div>
+      <div class="grp">Not-to-do</div>
+      <div class="form-card">
+        <label class="fld"><span>Nudge me after</span><input id="setNudge" inputmode="numeric" value="${prefInt("avoid_nudge", 0, 600)}"><em>minutes (PC only, 0 = never)</em></label>
+      </div>
+      <div class="err">${esc(m.msg)}</div>
+      <button class="btn" data-act="save-settings">Save</button>`;
+  }
+  el.innerHTML = `<div class="panel mgr">
+    <div class="row2" style="margin-top:0"><h3>Set up</h3><button class="link" data-act="close">Done</button></div>
+    <div class="seg mini">${tabs.map(([k, t]) => `<button data-tab="${k}" class="${m.tab === k ? "on" : ""}">${t}</button>`).join("")}</div>
+    ${body}</div>`;
+}
+function rowFor(t) {
+  const sub = t.kind === "avoid" ? (t.keywords ? `Spots: ${t.keywords}` : "Logged by hand")
+    : t.kind === "reps" ? [t.daily_target ? `${t.daily_target} a day` : "", t.weekly_target ? `${t.weekly_target} a week` : "", t.unit !== "reps" ? t.unit : ""].filter(Boolean).join(" · ") || "No target"
+    : [t.daily_target ? `${fmtMin(t.daily_target)} a day` : "", t.weekly_target ? `${fmtMin(t.weekly_target)} a week` : "", t.billable ? "" : "not counted"].filter(Boolean).join(" · ") || "No target";
+  return `<button class="row" data-edit-task="${t.uuid}"><span class="dot" style="background:${t.color}"></span>
+    <span class="row-main"><b>${esc(t.name)}</b><span class="faint small">${esc(sub)}</span></span><span class="chev">›</span></button>`;
+}
+
+function renderWelcome() {
+  const m = S.mgr;
+  $("#mgr").innerHTML = `<div class="panel mgr welcome-sheet">
+    <img class="logo small-logo" src="icon.svg" alt="">
+    <h3 style="text-align:center">Welcome to PATT</h3>
+    <p class="muted" style="text-align:center">Tap a task to time it, count your exercise, and keep an eye on time-wasters.
+      Pick a few to start with. You can change everything later.</p>
+    ${["time", "reps", "avoid"].map(k => `<div class="grp">${KIND_LABEL[k]}</div><div class="chips">${STARTERS.map((s, i) => s[0] === k
+      ? `<button class="chip-btn ${m.picked.has(i) ? "on" : ""}" data-pick="${i}">${esc(s[1])}</button>` : "").join("")}</div>`).join("")}
+    <button class="btn" data-act="welcome-add">${m.picked.size ? `Add ${m.picked.size} and start` : "Start with an empty board"}</button>
+    <button class="link block" data-act="welcome-own">I'll add my own</button></div>`;
+}
+
+function renderEditor() {
+  const m = S.mgr, e = m.edit;
+  if (e.type === "view") {
+    const v = D().views.find(x => x.uuid === e.uuid) || { name: "", weekly_target: null };
+    $("#mgr").innerHTML = `<div class="panel mgr">
+      <div class="row2" style="margin-top:0"><button class="link" data-act="back">Cancel</button><h3>${e.uuid ? "Edit view" : "New view"}</h3><button class="link" data-act="save-view"><b>Save</b></button></div>
+      <div class="form-card">
+        <label class="fld"><span>Name</span><input id="vName" value="${esc(v.name)}" placeholder="e.g. Work"></label>
+        <label class="fld"><span>Weekly target</span><input id="vWeek" value="${esc(fmtMin(v.weekly_target))}" placeholder="e.g. 30"><em>hours (30, 37:30…)</em></label>
+      </div>
+      <div class="err">${esc(m.msg)}</div>
+      ${e.uuid && viewList().length > 1 ? `<button class="btn secondary danger-t" data-act="archive-view">Archive this view</button>` : ""}</div>`;
+    return;
+  }
+  const t = D().tasks.find(x => x.uuid === e.uuid) || newTask(e.kind || "time", "");
+  const kind = e.uuid ? t.kind : (e.kind || "time");
+  const isNew = !e.uuid;
+  e.color = e.color || t.color;
+  const views = viewList();
+  const daily = kind === "reps" ? (t.daily_target ?? "") : fmtMin(t.daily_target);
+  const weekly = kind === "reps" ? (t.weekly_target ?? "") : fmtMin(t.weekly_target);
+  $("#mgr").innerHTML = `<div class="panel mgr">
+    <div class="row2" style="margin-top:0"><button class="link" data-act="back">Cancel</button><h3>${isNew ? "New task" : "Edit task"}</h3><button class="link" data-act="save-task"><b>Save</b></button></div>
+    ${isNew ? `<div class="seg mini">${["time", "reps", "avoid"].map(k => `<button data-kind="${k}" class="${kind === k ? "on" : ""}">${KIND_LABEL[k]}</button>`).join("")}</div>` : ""}
+    <div class="form-card">
+      <label class="fld"><span>Name</span><input id="tName" value="${esc(t.name)}" placeholder="${kind === "avoid" ? "e.g. YouTube" : kind === "reps" ? "e.g. Push-ups" : "e.g. Client project"}"></label>
+      ${kind === "time" ? `
+      <label class="fld"><span>View</span><select id="tView">${views.map(v => `<option value="${v.uuid}" ${v.uuid === t.view_uuid ? "selected" : ""}>${esc(v.name)}</option>`).join("")}</select></label>
+      <label class="fld"><span>Daily target</span><input id="tDaily" value="${esc(daily)}" placeholder="e.g. 2 or 1:30"><em>hours</em></label>
+      <label class="fld"><span>Weekly target</span><input id="tWeekly" value="${esc(weekly)}" placeholder="e.g. 10"><em>hours</em></label>
+      <label class="tog"><input type="checkbox" id="tWkd" ${t.weekdays_only ? "checked" : ""}> Daily target on weekdays only</label>
+      <label class="tog"><input type="checkbox" id="tBill" ${t.billable ? "checked" : ""}> Counts toward the view's hours (untick for breaks)</label>` : ""}
+      ${kind === "reps" ? `
+      <label class="fld"><span>Counted in</span><input id="tUnit" value="${esc(t.unit || "reps")}" placeholder="reps, km…"></label>
+      <label class="fld"><span>Daily target</span><input id="tDaily" inputmode="decimal" value="${esc(daily)}" placeholder="e.g. 100"></label>
+      <label class="fld"><span>Weekly target</span><input id="tWeekly" inputmode="decimal" value="${esc(weekly)}" placeholder="optional"></label>` : ""}
+      ${kind === "avoid" ? `
+      <label class="fld"><span>Words to spot</span><input id="tKeys" value="${esc(t.keywords || "")}" placeholder="e.g. youtube"><em>PATT on your PC logs a slip when a window title has one</em></label>` : ""}
+      <div class="fld"><span>Colour</span><div class="swatches">${COLORS.map(c => `<button class="sw ${c === e.color ? "on" : ""}" data-color="${c}" style="background:${c}" aria-label="${c}"></button>`).join("")}</div></div>
+    </div>
+    <div class="err">${esc(m.msg)}</div>
+    ${!isNew ? `<button class="btn secondary ${t.archived ? "" : "danger-t"}" data-act="archive-task">${t.archived ? "Restore" : "Archive (hide)"}</button>` : ""}</div>`;
+  if (isNew) setTimeout(() => $("#tName") && $("#tName").focus(), 50);
+}
+
+async function onManageClick(ev) {
+  const m = S.mgr;
+  if (!m) return;
+  if (ev.target.id === "mgr") return m.edit ? backFromEditor() : closeManage();
+  const b = ev.target.closest("button");
+  if (!b) return;
+  ev.preventDefault();
+  const d = b.dataset;
+  if (d.tab) { m.tab = d.tab; m.msg = ""; return renderManage(); }
+  if (d.editTask) { m.edit = { type: "task", uuid: d.editTask }; return renderManage(); }
+  if (d.editView) { m.edit = { type: "view", uuid: d.editView }; return renderManage(); }
+  if (d.kind) { keepTyped(() => { m.edit.kind = d.kind; }); return; }
+  if (d.color) { keepTyped(() => { m.edit.color = d.color; }); return; }
+  if (d.pick) { const i = +d.pick; m.picked.has(i) ? m.picked.delete(i) : m.picked.add(i); return renderManage(); }
+  switch (d.act) {
+    case "close": return closeManage();
+    case "back": return backFromEditor();
+    case "arch": m.showArchived = !m.showArchived; return renderManage();
+    case "new-task": m.edit = { type: "task", uuid: null, kind: "time" }; return renderManage();
+    case "new-view": m.edit = { type: "view", uuid: null }; return renderManage();
+    case "save-task": return saveTask();
+    case "save-view": return saveView();
+    case "save-settings": return saveSettings();
+    case "archive-task": {
+      const t = D().tasks.find(x => x.uuid === m.edit.uuid);
+      if (t) await saveRow("tasks", { uuid: t.uuid, archived: t.archived ? 0 : 1 }, false);
+      return backFromEditor();
+    }
+    case "archive-view": {
+      await saveRow("views", { uuid: m.edit.uuid, archived: 1 }, false);
+      if (S.view === m.edit.uuid) { S.view = (viewList()[0] || {}).uuid || "all"; LS.set("view", S.view); }
+      return backFromEditor();
+    }
+    case "welcome-add": case "welcome-own": {
+      S.welcomed = true; LS.set("welcomed", true);
+      const rows = [];
+      for (const i of [...m.picked].sort((a, b) => a - b)) {      // one by one: colours and order advance
+        const [k, name, x] = STARTERS[i];
+        const r = newTask(k, name, k === "reps" ? { unit: x || "reps" } : k === "avoid" ? { keywords: x } : {});
+        D().tasks.push(r);
+        rows.push(r);
+      }
+      if (d.act === "welcome-own") { m.tab = "tasks"; m.edit = { type: "task", uuid: null, kind: "time" }; renderManage(); }
+      else closeManage();
+      if (rows.length) await enqueue({ m: "POST", p: "tasks?on_conflict=user_id,uuid", b: rows, prefer: UPSERT });
+      LS.set("cache", S.data);
+      return;
+    }
+  }
+}
+// re-render the editor without losing what's been typed
+function keepTyped(change) {
+  const vals = {};
+  for (const i of $("#mgr").querySelectorAll("input,select")) vals[i.id] = i.type === "checkbox" ? i.checked : i.value;
+  change();
+  renderManage();
+  for (const [id, v] of Object.entries(vals)) { const i = $("#" + id); if (!i) continue; if (i.type === "checkbox") i.checked = v; else i.value = v; }
+}
+
+async function saveTask() {
+  const m = S.mgr, e = m.edit, isNew = !e.uuid;
+  const old = D().tasks.find(x => x.uuid === e.uuid);
+  const kind = isNew ? (e.kind || "time") : old.kind;
+  const val = id => ($("#" + id) ? $("#" + id).value.trim() : "");
+  const name = val("tName");
+  if (!name) { m.msg = "Give it a name."; return keepTyped(() => {}); }
+  const row = isNew ? newTask(kind, name) : { uuid: old.uuid, name };
+  row.color = e.color || row.color || old.color;
+  try {
+    if (kind === "time") {
+      row.view_uuid = val("tView") || null;
+      row.daily_target = parseDur(val("tDaily"), 12);
+      row.weekly_target = parseDur(val("tWeekly"), 168);
+      row.weekdays_only = $("#tWkd").checked ? 1 : 0;
+      row.billable = $("#tBill").checked ? 1 : 0;
+    } else if (kind === "reps") {
+      const num = s => { if (!s) return null; const n = Number(s); if (!(n > 0)) throw new Error(s); return n; };
+      row.daily_target = num(val("tDaily")); row.weekly_target = num(val("tWeekly"));
+      row.unit = val("tUnit") || "reps";
+    } else {
+      row.keywords = val("tKeys").toLowerCase().split(",").map(x => x.trim()).filter(Boolean).join(", ");
+    }
+  } catch (err) {
+    m.msg = kind === "reps" ? "Targets are numbers, e.g. 100." : "Targets look like 2 (hours), 1:30 or 45m.";
+    return keepTyped(() => {});
+  }
+  backFromEditor();
+  await saveRow("tasks", row, isNew);
+  renderAll();
+}
+
+async function saveView() {
+  const m = S.mgr, e = m.edit, isNew = !e.uuid;
+  const name = $("#vName").value.trim();
+  let week;
+  try { week = parseDur($("#vWeek").value, 168); } catch { m.msg = "The weekly target looks like 30 or 37:30."; return keepTyped(() => {}); }
+  if (!name) { m.msg = "Give it a name."; return keepTyped(() => {}); }
+  const row = isNew ? { uuid: uuid(), name, weekly_target: week, plan: "360,360,360,360,360,0,0", sort_order: nextOrder(D().views), archived: 0 }
+                    : { uuid: e.uuid, name, weekly_target: week };
+  backFromEditor();
+  await saveRow("views", row, isNew);
+  if (isNew) { S.view = row.uuid; LS.set("view", S.view); }
+  renderAll();
+}
+
+async function saveSettings() {
+  const m = S.mgr, int = id => Number($("#" + id).value.trim());
+  const ask = int("setAsk"), pause = int("setPause"), nudge = int("setNudge");
+  if (![ask, pause, nudge].every(Number.isInteger) || !(ask >= 1 && ask < pause && pause <= 600) || nudge < 0 || nudge > 600) {
+    m.msg = "The pause has to come after the reminder, e.g. ask after 25 and pause after 30 minutes.";
+    return keepTyped(() => {});
+  }
+  const want = { checkin_on: $("#setOn").checked ? "1" : "0", checkin_prompt: String(ask), checkin_pause: String(pause), avoid_nudge: String(nudge) };
+  const rows = [];
+  for (const [key, value] of Object.entries(want)) {
+    if (pref(key) === value && (D().prefs || []).some(p => p.key === key)) continue;
+    const row = { uuid: await uuid5("patt-pref:" + key), key, value };
+    D().prefs = (D().prefs || []).filter(p => p.key !== key).concat([{ key, value }]);
+    rows.push(row);
+  }
+  closeManage();
+  toast("Settings saved");
+  if (rows.length) await enqueue({ m: "POST", p: "prefs?on_conflict=user_id,uuid", b: rows, prefer: UPSERT });
+  LS.set("cache", S.data);
+}
+
 // --------------------------------------------------------------- sign in ----
 const appUrl = () => location.origin + location.pathname;
 function pendingHandoff() {
@@ -775,10 +1112,12 @@ function screen(inner) {
 function renderSignIn(err = "") {
   if (pendingHandoff()) return renderWaiting();
   screen(`<h1>PATT</h1>
-    <p class="lead">Your time tracker, in step with PATT on your PC.</p>
+    <p class="lead">Time your work, count your exercise and keep tabs on time-wasters, on your phone, in your browser and on your PC.</p>
     <button class="btn google" id="google">Continue with Google</button>
     <div class="err">${esc(err)}</div>
-    <p class="fine">Use the same Google account you signed in with on your PC.</p>`);
+    <p class="fine">New here? Just continue: your account is made the first time you sign in.
+      Already use PATT on a PC? Use the same Google account.</p>
+    <p class="fine"><a href="privacy.html">Privacy</a> · <a href="get/">Get PATT for Windows</a></p>`);
   $("#google").onclick = () => googleSignIn();
 }
 
@@ -880,7 +1219,9 @@ function signOut() {
 
 // --------------------------------------------------------------- boot ----
 (async function boot() {
-  document.body.insertAdjacentHTML("beforeend", '<div id="ci" class="sheet hidden" role="dialog" aria-modal="true"></div>');
+  document.body.insertAdjacentHTML("beforeend", '<div id="ci" class="sheet hidden" role="dialog" aria-modal="true"></div>' +
+    '<div id="mgr" class="sheet hidden" role="dialog" aria-modal="true"></div>');
+  $("#mgr").addEventListener("click", onManageClick);
   const ret = await handleReturn();
   if (ret && ret.parked) return;                 // this Safari page only passes the sign-in on
   if (ret && ret.error) renderSignIn(ret.error); else renderAll();

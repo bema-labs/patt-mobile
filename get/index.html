@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0a0a0c">
+  <title>Get PATT</title>
+  <meta name="description" content="PATT: a simple time tracker for your iPhone, your browser and your Windows PC.">
+  <link rel="icon" type="image/svg+xml" href="../icon.svg">
+  <style>
+    :root { --bg: #0a0a0c; --card: #1c1c1e; --tile: #2c2c2e; --text: #f5f5f7; --muted: #98989d;
+            --faint: #6e6e73; --accent: #0a84ff; --good: #30d158; --warn: #ff9f0a; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text);
+           font: 16px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+           padding: max(20px, env(safe-area-inset-top)) 16px 40px; }
+    main { max-width: 980px; margin: 0 auto; }
+    .hero { text-align: center; padding: 36px 0 28px; }
+    .hero img { width: 104px; height: 104px; border-radius: 24px; box-shadow: 0 10px 40px rgba(10,132,255,.22); }
+    h1 { font-size: 44px; letter-spacing: -.02em; margin: 18px 0 6px; }
+    .lead { color: var(--muted); font-size: 19px; max-width: 620px; margin: 0 auto; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 14px; margin-top: 30px; }
+    .card { background: var(--card); border-radius: 20px; padding: 22px; display: flex; flex-direction: column; }
+    .card h2 { font-size: 20px; margin: 0 0 4px; }
+    .card .sub { color: var(--muted); font-size: 14px; margin: 0 0 14px; }
+    ol { margin: 0 0 18px; padding-left: 20px; color: #d1d1d6; font-size: 15px; }
+    ol li { margin: 4px 0; }
+    .btn { margin-top: auto; display: block; text-align: center; text-decoration: none; background: var(--accent);
+           color: white; font-weight: 600; padding: 13px; border-radius: 14px; }
+    .btn.sec { background: var(--tile); color: var(--text); }
+    .note { color: var(--faint); font-size: 13px; margin: 10px 0 0; }
+    .feats { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 40px; }
+    .feat { padding: 4px 6px; }
+    .feat b { display: block; font-size: 16px; margin-bottom: 2px; }
+    .feat span { color: var(--muted); font-size: 14px; }
+    .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; vertical-align: 1px; }
+    footer { text-align: center; color: var(--faint); font-size: 13px; margin-top: 46px; }
+    footer a { color: var(--muted); }
+    kbd { background: var(--tile); border-radius: 6px; padding: 1px 6px; font: inherit; font-size: 13px; }
+  </style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <img src="../icon.svg" alt="">
+    <h1>PATT</h1>
+    <p class="lead">A simple time tracker. Tap a task to time it, see what's left of today and this week,
+      count your exercise and keep tabs on time-wasters. Free, with your own private account.</p>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <h2>iPhone</h2>
+      <p class="sub">Works like an app from your Home Screen.</p>
+      <ol>
+        <li>Open PATT in <b>Safari</b> (button below).</li>
+        <li>Tap <b>Share</b>, then <b>Add to Home Screen</b>.</li>
+        <li>Open PATT from your Home Screen and tap <b>Continue with Google</b>.</li>
+      </ol>
+      <a class="btn" href="../">Open PATT</a>
+    </div>
+    <div class="card">
+      <h2>Windows PC</h2>
+      <p class="sub">Full screen panel, global hotkey, reports and timesheets.</p>
+      <ol>
+        <li>Download and run the installer (no admin needed).</li>
+        <li>If Windows says it protected your PC, click <b>More info</b>, then <b>Run anyway</b>.</li>
+        <li>To use your phone too, click <b>Sign in</b> under the date and use the same Google account.</li>
+      </ol>
+      <a class="btn" href="https://github.com/simongtan/patt/releases/latest/download/PATT-Setup.exe">Download for Windows</a>
+      <p class="note">Windows 10 or 11. <a href="https://github.com/simongtan/patt/releases/latest" style="color:inherit">Release notes</a></p>
+    </div>
+    <div class="card">
+      <h2>Mac or any computer</h2>
+      <p class="sub">The same app in your browser: Chrome, Safari, Edge or Firefox.</p>
+      <ol>
+        <li>Open PATT (button below).</li>
+        <li>Tap <b>Continue with Google</b>.</li>
+        <li>Optional: bookmark it, or in Chrome use <b>Install PATT</b> from the address bar.</li>
+      </ol>
+      <a class="btn sec" href="../">Open in the browser</a>
+    </div>
+  </section>
+
+  <section class="feats">
+    <div class="feat"><b><span class="dot" style="background:#0a84ff"></span>Today and this week</b>
+      <span>Daily and weekly targets per task, with rings that fill as you go.</span></div>
+    <div class="feat"><b><span class="dot" style="background:#30d158"></span>Notes as you work</b>
+      <span>Jot down what you did; PATT nudges you if you forget, and pauses the timer if you keep forgetting.</span></div>
+    <div class="feat"><b><span class="dot" style="background:#ff9f0a"></span>Exercise</b>
+      <span>Count push-ups, kilometres or anything else, with weekly records.</span></div>
+    <div class="feat"><b><span class="dot" style="background:#ff375f"></span>Not-to-do list</b>
+      <span>YouTube, social media&hellip; log the slips. On Windows PATT notices them for you.</span></div>
+  </section>
+
+  <footer>
+    Everything syncs between your devices when you sign in with the same Google account.<br>
+    <a href="../privacy.html">Privacy</a> &middot; Made by Simon Tan
+  </footer>
+</main>
+</body>
+</html>

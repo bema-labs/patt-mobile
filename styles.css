@@ -152,3 +152,71 @@ input { font: inherit; color: var(--text); }
   max-width: 90vw; text-align: center; }
 .footer { text-align: center; color: var(--faint); font-size: 12px; margin-top: 6px; }
 .footer button { color: var(--faint); text-decoration: underline; font-size: 12px; }
+
+/* ---- 1.4: header button, layout, set-up screens ---- */
+.head-r { display: flex; align-items: center; gap: 8px; }
+.icon-btn { width: 34px; height: 34px; border-radius: 50%; background: var(--card); color: var(--muted);
+  display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.icon-btn:active { background: var(--tile); }
+
+/* phones: one column in this order; wide screens: tiles left, Now/rings/mood right */
+.cols { display: flex; flex-direction: column; }
+.colL, .colR { display: contents; }
+#seg { order: 1; } #now { order: 2; } #counters { order: 3; } #tiles { order: 4; }
+#exCard { order: 5; } #avCard { order: 6; } #moodCard { order: 7; }
+@media (min-width: 900px) {
+  body { max-width: 1240px; margin: 0 auto; padding-left: 28px; padding-right: 28px; }
+  .head { margin-top: 18px; }
+  .cols { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 0 20px; align-items: start; }
+  .colL, .colR { display: block; }
+  .tiles { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+  .tile { min-height: 140px; }
+  .ex { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .sheet { align-items: center; justify-content: center; }
+  .sheet .panel { max-width: 540px; border-radius: 22px; max-height: 88vh; }
+}
+
+/* empty states */
+.empty { text-align: center; padding: 26px 16px; }
+.empty-t { font-size: 19px; font-weight: 600; margin-bottom: 4px; }
+.btn.pill { display: inline-block; width: auto; padding: 10px 22px; border-radius: 999px; margin-top: 14px; }
+.empty-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; grid-column: 1 / -1; }
+.chip-btn { background: var(--tile); color: var(--text); border-radius: 999px; padding: 7px 14px; font-size: 13px;
+  white-space: nowrap; }
+.chip-btn.on { background: var(--accent); color: white; }
+
+/* set-up sheet */
+.mgr h3 { margin: 0; font-size: 18px; }
+.seg.mini { margin: 12px 0 4px; }
+.seg.mini button { flex: 1; padding: 7px 8px; }
+.grp { font-size: 12px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); font-weight: 600;
+  margin: 18px 4px 6px; }
+.list { background: var(--tile); border-radius: 14px; overflow: hidden; }
+.row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 11px 14px;
+  border-bottom: 1px solid var(--border); }
+.list .row:last-child { border-bottom: 0; }
+.row .dot { flex: none; }
+.row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.row-main b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chev { color: var(--faint); font-size: 22px; line-height: 1; }
+.form-card { background: var(--tile); border-radius: 14px; padding: 4px 14px; margin-top: 12px; }
+.fld { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 10px 0;
+  border-bottom: 1px solid var(--border); }
+.form-card > :last-child { border-bottom: 0; }
+.fld > span { flex: 0 0 120px; color: var(--muted); font-size: 14px; }
+.fld input, .fld select { flex: 1; min-width: 0; background: transparent; border: 0; outline: none; color: var(--text);
+  font: inherit; text-align: right; -webkit-user-select: text; user-select: text; padding: 4px 0; }
+.fld select { text-align-last: right; appearance: none; -webkit-appearance: none; }
+.fld input::placeholder { color: var(--faint); }
+.fld em { flex: 1 0 100%; font-style: normal; font-size: 12px; color: var(--faint); text-align: right; }
+.tog { display: flex; align-items: center; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--border);
+  font-size: 14px; }
+.tog input { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
+.swatches { flex: 1; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.sw { width: 26px; height: 26px; border-radius: 50%; border: 2px solid transparent; }
+.sw.on { border-color: var(--text); box-shadow: 0 0 0 2px var(--tile) inset; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.danger-t { color: var(--danger) !important; }
+.small-logo { display: block; width: 64px; height: 64px; border-radius: 15px; margin: 4px auto 10px; }
+.welcome-sheet p { margin: 6px 0 4px; }
+.welcome .fine a { color: var(--muted); }

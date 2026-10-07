@@ -1,7 +1,7 @@
 // Keeps the app shell available offline. Network first (so updates show up
 // straight away), cache as the fallback. Only same-origin files; data calls to
 // Supabase are never cached here.
-const CACHE = "patt-shell-v4";
+const CACHE = "patt-shell-v5";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "manifest.webmanifest", "icon.svg"];
 
 self.addEventListener("install", e => {   // one missing file mustn't stop the install
