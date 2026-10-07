@@ -3,13 +3,20 @@
 // what's left on counted tasks' daily targets, This week = weekly target minus
 // counted time. No build step, no libraries.
 
-const VERSION = "1.2.0";
+const VERSION = "1.3.0";
 const UPSERT = "resolution=merge-duplicates,return=minimal";
 const MOODS = [["Productive", "#30d158"], ["Focused", "#0a84ff"], ["Okay", "#8e8e93"],
                ["Distracted", "#ff9f0a"], ["Unmotivated", "#ff453a"], ["Tired", "#bf5af2"]];
 const REFRESH_EVERY = 20;          // seconds between pulls while the app is open
 const DOUBLE_TAP = 0.7, MOOD_UNDO = 15, NOTE_GRACE = 120, MIN_SESSION = 3;
 const HANDOFF_FOR = 600;           // seconds a Google sign-in may take to come back
+const SLIP_UNDO = 8;               // tap a not-to-do item again within this to undo
+const CHECKIN_GRACE = 120;         // a check-in never pauses sooner than this after it appeared
+// Shared with the PC (Settings there); used until the PC has saved its own.
+const DEFAULT_PREFS = { checkin_on: "1", checkin_prompt: "25", checkin_pause: "30", avoid_nudge: "2" };
+const QUESTIONS = ["What have you been working on?", "What have you achieved since your last note?",
+                   "What's moved forward in the last half hour?", "Quick note: what are you in the middle of?"];
+const EMPTY = () => ({ views: [], tasks: [], sessions: [], notes: [], moods: [], reps: [], overrides: [], prefs: [] });
 // Simon's Supabase project. The publishable key is meant to be public: it only lets
 // people try to sign in. Data is protected by Google sign-in + row-level security.
 const CLOUD = { url: "https://stggkftvuzwsserlervg.supabase.co",
@@ -26,11 +33,13 @@ const S = {
   cfg: LS.get("cfg") || CLOUD,              // {url, key}; a saved one only for testing
   auth: LS.get("auth"),                     // {access_token, refresh_token, expires_at, email}
   view: LS.get("view", null),               // view uuid or "all"
-  data: LS.get("cache", null) || { views: [], tasks: [], sessions: [], notes: [], moods: [], reps: [], overrides: [] },
+  data: { ...EMPTY(), ...(LS.get("cache", null) || {}) },
   queue: LS.get("queue", []),
   status: "idle", lastSync: LS.get("lastSync", 0), error: "",
   lastTap: { uuid: null, t: 0 },
   sheetTask: null, padValue: "",
+  slipUndo: null,                           // {task, uuid, until}: the slip a second tap undoes
+  ci: { since: null, at: 0, paused: null }, // check-in: asked for which stretch, when; paused session
 };
 
 // -------------------------------------------------------------- time -----
@@ -44,6 +53,7 @@ const isoDay = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDa
 function fmtHM(sec) { const neg = sec < 0; sec = Math.round(Math.abs(sec)); return `${neg ? "-" : ""}${Math.floor(sec / 3600)}:${pad2(Math.floor(sec % 3600 / 60))}`; }
 function fmtHMS(sec) { sec = Math.max(0, Math.floor(sec)); return `${Math.floor(sec / 3600)}:${pad2(Math.floor(sec % 3600 / 60))}:${pad2(sec % 60)}`; }
 function fmtClock(t) { const d = new Date(t * 1000); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; }
+const mmss = sec => { sec = Math.max(0, Math.floor(sec)); return `${Math.floor(sec / 60)}:${pad2(sec % 60)}`; };
 function fmtQty(v, unit) { const n = Math.round(v * 1000) / 1000; const t = Number.isInteger(n) ? n.toLocaleString() : n.toFixed(1); return unit && unit !== "reps" ? `${t} ${unit}` : t; }
 const clip = (s, e, a, b) => Math.max(0, Math.min(e, b) - Math.max(s, a));
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -157,16 +167,17 @@ async function load() {
     await flushQueue();
     if (S.queue.length) return;                    // still offline
     const ws = weekStart(), today = startOfDay();
-    const [views, tasks, sessions, notes, moods, reps, overrides] = await Promise.all([
+    const [views, tasks, sessions, notes, moods, reps, overrides, prefs] = await Promise.all([
       getAll("views", "select=*&deleted=is.false&order=sort_order"),
       getAll("tasks", "select=*&deleted=is.false&order=sort_order"),
       getAll("sessions", `select=*&deleted=is.false&or=(end_ts.is.null,start_ts.gte.${ts(addDays(ws, -1))})&order=start_ts`),
       getAll("session_notes", `select=*&deleted=is.false&ts=gte.${ts(addDays(today, -1))}&order=ts`),
       getAll("moods", `select=*&deleted=is.false&ts=gte.${ts(today)}&order=ts`),
-      getAll("reps", "select=uuid,task_uuid,ts,count&deleted=is.false&order=ts"),
+      getAll("reps", "select=uuid,task_uuid,ts,count,secs&deleted=is.false&order=ts"),
       getAll("overrides", `select=*&deleted=is.false&day=gte.${isoDay(ws)}`),
+      getAll("prefs", "select=key,value&deleted=is.false"),
     ]);
-    S.data = { views, tasks, sessions, notes, moods, reps, overrides };
+    S.data = { views, tasks, sessions, notes, moods, reps, overrides, prefs };
     LS.set("cache", S.data);
     S.lastSync = now(); LS.set("lastSync", S.lastSync);
     setStatus("ok");
@@ -194,6 +205,13 @@ function running() {
     .sort((a, b) => b.start_ts - a.start_ts)[0] || null;
 }
 function taskBy(u) { return D().tasks.find(t => t.uuid === u); }
+const isTimed = t => t.kind !== "reps" && t.kind !== "avoid";      // not exercise, not not-to-do
+function pref(k) { const r = (D().prefs || []).find(p => p.key === k); return r ? r.value : DEFAULT_PREFS[k]; }
+function prefInt(k, lo, hi) {
+  const v = parseInt(pref(k), 10);
+  return Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : parseInt(DEFAULT_PREFS[k], 10);
+}
+function ciLimits() { const a = prefInt("checkin_prompt", 1, 600); return [a, Math.max(prefInt("checkin_pause", 1, 600), a + 1)]; }
 function targetFor(t, day) {
   const o = D().overrides.find(x => x.task_uuid === t.uuid && x.day === isoDay(day));
   if (o) return o.daily_target;
@@ -211,12 +229,12 @@ function secsByTask(a, b, n) {
 }
 function tilesTasks() {
   const vids = new Set(selectedViews().map(v => v.uuid));
-  return D().tasks.filter(t => t.kind !== "reps" && !t.archived && (S.view === "all" || vids.has(t.view_uuid)))
+  return D().tasks.filter(t => isTimed(t) && !t.archived && (S.view === "all" || vids.has(t.view_uuid)))
     .sort((a, b) => a.sort_order - b.sort_order);
 }
 function counted() {
   const vids = new Set(selectedViews().map(v => v.uuid));
-  return D().tasks.filter(t => vids.has(t.view_uuid) && t.billable && t.kind !== "reps");
+  return D().tasks.filter(t => vids.has(t.view_uuid) && t.billable && isTimed(t));
 }
 
 function computeAll() {
@@ -257,7 +275,7 @@ function renderAll() {
         <div id="head" class="head"></div>
         <div id="seg" class="seg"></div>
         <section class="card" id="now">
-          <div class="caps">Now</div>
+          <div class="row2" style="margin-top:0"><span class="caps">Now</span><span id="ciChip" class="chip"></span></div>
           <div class="now-row" style="margin-top:6px"><span id="nowDot" class="dot"></span><span id="nowName" class="now-name"></span></div>
           <div class="now-row"><span id="clock" class="clock">0:00:00</span><span style="flex:1"></span>
             <button id="stopBtn" class="stop">Stop</button></div>
@@ -269,7 +287,8 @@ function renderAll() {
         </section>
         <section class="card" id="counters"></section>
         <div id="tiles" class="tiles"></div>
-        <section class="card"><div class="caps">Exercise · this week</div><div id="ex" class="ex"></div></section>
+        <section class="card"><div class="caps">Exercise <span class="faint">· this week</span></div><div id="ex" class="ex"></div></section>
+        <section class="card"><div class="caps">Not-to-do <span class="faint">· today</span></div><div id="av" class="ex"></div></section>
         <section class="card"><div class="row2" style="margin-top:0"><span class="caps">Mood</span><span id="moodLast" class="small faint"></span></div>
           <div id="moods" class="moods"></div></section>
         <div id="foot" class="footer"></div>
@@ -280,9 +299,10 @@ function renderAll() {
     $("#seg").onclick = e => { const b = e.target.closest("[data-view]"); if (b) { S.view = b.dataset.view; LS.set("view", S.view); renderAll(); } };
     $("#moods").onclick = e => { const b = e.target.closest("[data-mood]"); if (b) logMood(b.dataset.mood); };
     $("#ex").onclick = e => { const b = e.target.closest("[data-ex]"); if (b) openPad(b.dataset.ex); };
+    $("#av").onclick = e => { const b = e.target.closest("[data-av]"); if (b) logSlip(b.dataset.av); };
     $("#foot").onclick = e => { if (e.target.id === "signOut") signOut(); };
   }
-  renderHead(); renderSeg(); renderNow(); renderTiles(); renderEx(); renderMoods(); live();
+  renderHead(); renderSeg(); renderNow(); renderTiles(); renderEx(); renderAv(); renderMoods(); live();
   $("#foot").innerHTML = `Signed in as ${esc(S.auth.email)} · <button id="signOut">Sign out</button><br>PATT mobile ${VERSION}`;
 }
 
@@ -309,10 +329,15 @@ function renderSeg() {
 
 function renderNow() {
   const r = running(), t = r && taskBy(r.task_uuid);
-  $("#nowDot").style.background = t ? t.color : "var(--faint)";
-  $("#nowName").textContent = t ? t.name : "Nothing running";
-  $("#nowName").style.color = t ? "var(--text)" : "var(--muted)";
+  const p = !r && S.ci.paused, pt = p && taskBy(p.task_uuid);
+  $("#nowDot").style.background = t ? t.color : pt ? "var(--danger)" : "var(--faint)";
+  $("#nowName").textContent = t ? t.name : pt ? pt.name : "Nothing running";
+  $("#nowName").style.color = t || pt ? "var(--text)" : "var(--muted)";
   $("#stopBtn").disabled = !r;
+  if (pt) {
+    $("#notes").innerHTML = `<div style="color:var(--danger)">No note for ${ciLimits()[1]} minutes, so the timer is paused. Add a note to carry on.</div>`;
+    return;
+  }
   const notes = r ? D().notes.filter(x => x.session_uuid === r.uuid).sort((a, b) => a.ts - b.ts).slice(-3) : [];
   $("#notes").innerHTML = r ? (notes.map(x => `<div><b>${fmtClock(x.ts)}</b>${esc(x.text)}</div>`).join("") ||
     `<div class="faint">Notes are saved with this session for your timesheet.</div>`) : `<div class="faint">Tap a task to start its timer.</div>`;
@@ -352,36 +377,41 @@ function renderTiles() {
 
 function renderCounters(c) {
   const name = S.view === "all" ? "All views" : (selectedViews()[0] || {}).name || "";
-  let dayHtml, weekHtml;
+  let dayHtml, weekHtml, dayFrac = null, weekFrac = null;
   if (c.planned <= 0) {
-    dayHtml = metric("Today", fmtHM(c.doneToday), "worked", null, "No daily targets on these tasks yet");
+    dayHtml = metric("Today", "var(--accent)", fmtHM(c.doneToday), "worked", "No daily targets yet");
   } else {
-    dayHtml = metric("Today", c.left > 0 ? fmtHM(c.left) : "Done", c.left > 0 ? "left" : "✓",
-                     (c.planned - c.left) / c.planned, `${fmtHM(c.doneToday)} worked of ${fmtHM(c.planned)} planned`,
-                     c.left <= 0);
+    dayFrac = (c.planned - c.left) / c.planned;
+    dayHtml = metric("Today", "var(--accent)", c.left > 0 ? fmtHM(c.left) : "Done", c.left > 0 ? "left" : "✓",
+                     `${fmtHM(c.doneToday)} of ${fmtHM(c.planned)} planned`, c.left <= 0);
   }
   if (!c.weekTarget) {
-    weekHtml = metric("This week", fmtHM(c.doneWeek), "worked", null, "Set a weekly target on the PC (Edit view)");
+    weekHtml = metric("This week", "var(--good)", fmtHM(c.doneWeek), "worked", "Set a weekly target on the PC");
   } else {
     const wl = c.weekTarget - c.doneWeek, th = c.weekTarget / 3600;
-    let sub = `${fmtHM(c.doneWeek)} counted`;
-    if (wl > 0 && c.weekdaysLeft) {
-      const perDay = (wl + (c.isWeekday ? c.doneToday : 0)) / c.weekdaysLeft;
-      sub += ` · ≈${fmtHM(perDay)}/day for ${c.weekdaysLeft} day${c.weekdaysLeft > 1 ? "s" : ""} incl. today`;
-    }
-    weekHtml = wl > 0 ? metric("This week", fmtHM(wl), `left of ${Number.isInteger(th) ? th + "h" : fmtHM(c.weekTarget)}`,
-                               c.doneWeek / c.weekTarget, sub)
-                      : metric("This week", "Done", "✓", c.doneWeek / c.weekTarget, `${fmtHM(c.doneWeek)} counted — weekly commitment met`, true);
+    weekFrac = c.doneWeek / c.weekTarget;
+    let sub = `${fmtHM(c.doneWeek)} done`;
+    if (wl > 0 && c.weekdaysLeft) sub += ` · ${fmtHM((wl + (c.isWeekday ? c.doneToday : 0)) / c.weekdaysLeft)} a day`;
+    weekHtml = wl > 0 ? metric("This week", "var(--good)", fmtHM(wl), `left of ${Number.isInteger(th) ? th + "h" : fmtHM(c.weekTarget)}`, sub)
+                      : metric("This week", "var(--good)", "Done", "✓", `${fmtHM(c.doneWeek)} done this week`, true);
   }
-  $("#counters").innerHTML = `<div class="caps">${esc(name)}</div>${dayHtml}${weekHtml}`;
+  $("#counters").innerHTML = `<div class="caps">${esc(name)}</div>
+    <div class="rings-row">${rings(dayFrac, weekFrac)}<div class="metrics">${dayHtml}${weekHtml}</div></div>`;
 }
-function metric(label, big, suf, frac, sub, good = false) {
-  const w = frac == null ? null : Math.max(0, Math.min(1, frac)) * 100;
-  const cls = frac == null ? "" : frac > 1 ? "over" : frac >= 1 ? "full" : "";
-  return `<div class="metric"><div class="row"><span class="lbl">${label}</span>
-    <span><span class="big" style="${good ? "color:var(--good)" : ""}">${big}</span> <span class="muted small">${esc(suf)}</span></span></div>
-    ${w == null ? "" : `<div class="bar"><i class="${cls}" style="width:${w}%"></i></div>`}
-    <div class="small faint" style="margin-top:4px">${esc(sub)}</div></div>`;
+// Activity-style rings: today outside (blue), this week inside (green)
+function rings(dayFrac, weekFrac) {
+  const arc = (r, frac, col) => {
+    const C = 2 * Math.PI * r, f = frac == null ? 0 : Math.max(0, Math.min(1, frac));
+    return `<circle cx="50" cy="50" r="${r}" fill="none" stroke="${col}" stroke-opacity=".22" stroke-width="12"/>` +
+      (f > 0.005 ? `<circle cx="50" cy="50" r="${r}" fill="none" stroke="${col}" stroke-width="12" stroke-linecap="round"
+         stroke-dasharray="${(f * C).toFixed(2)} ${C.toFixed(2)}" transform="rotate(-90 50 50)"/>` : "");
+  };
+  return `<svg class="rings" viewBox="0 0 100 100" aria-hidden="true">${arc(43, dayFrac, "#0a84ff")}${arc(29, weekFrac, "#30d158")}</svg>`;
+}
+function metric(label, colour, big, suf, sub, good = false) {
+  return `<div class="metric"><div class="lbl" style="color:${colour}">${label}</div>
+    <div><span class="big" style="${good ? "color:var(--good)" : ""}">${big}</span> <span class="muted small">${esc(suf)}</span></div>
+    <div class="small faint">${esc(sub)}</div></div>`;
 }
 
 function renderEx() {
@@ -397,11 +427,27 @@ function renderEx() {
     const past = Object.entries(byWeek).filter(([k]) => +k !== w0).map(([, v]) => v);
     const best = past.length ? Math.max(...past) : 0;
     const rec = past.length && cur > best ? `<span class="rec new">★ new weekly record</span>`
-              : best ? `<span class="rec">Record ${fmtQty(best, t.unit)}</span>` : `<span class="rec">No record yet</span>`;
+              : best ? `<span class="rec">Best ${fmtQty(best, t.unit)}</span>` : `<span class="rec">&nbsp;</span>`;
     return `<button data-ex="${t.uuid}"><div class="small muted"><span class="dot" style="background:${t.color};width:7px;height:7px"></span> ${esc(t.name)}</div>
-      <div class="val">${fmtQty(cur, t.unit)}</div>${rec}</button>`;
+      <div class="val" style="${cur ? "" : "color:var(--faint)"}">${fmtQty(cur, t.unit)}</div>${rec}</button>`;
   }).join("") : `<div class="muted small">Add exercises in PATT on your PC (Tasks → New task → Reps / count).</div>`;
   void w1;
+}
+
+function renderAv() {
+  const items = D().tasks.filter(t => t.kind === "avoid" && !t.archived).sort((a, b) => a.sort_order - b.sort_order);
+  const t0 = ts(startOfDay()), w0 = ts(weekStart()), n = now();
+  $("#av").innerHTML = items.length ? items.map(t => {
+    const rs = D().reps.filter(r => r.task_uuid === t.uuid && r.ts >= w0);
+    const today = rs.filter(r => r.ts >= t0).length;
+    const secs = rs.reduce((a, r) => a + (r.secs || 0), 0);
+    const undo = S.slipUndo && S.slipUndo.task === t.uuid && S.slipUndo.until > n;
+    const sub = undo ? "Logged · tap again to undo" : `${rs.length} this week${secs >= 60 ? " · " + fmtHM(secs) : ""}`;
+    return `<button data-av="${t.uuid}"><div class="small muted"><span class="dot" style="background:${t.color};width:7px;height:7px"></span> ${esc(t.name)}</div>
+      <div class="val" style="color:${today ? "var(--slip)" : "var(--good)"}">${today ? today + "×" : "Clean"}</div>
+      <span class="rec">${esc(sub)}</span></button>`;
+  }).join("") : `<div class="muted small">Things to stay away from, like YouTube. Add them in PATT on your PC
+      (Tasks → New task → Not-to-do), then tap one here when you slip.</div>`;
 }
 
 function renderMoods() {
@@ -415,8 +461,14 @@ function renderMoods() {
 function live() {                     // once a second: clock, tiles, counters
   if (!$("#main")) return;
   const c = computeAll();
-  $("#clock").textContent = c.running ? fmtHMS(c.n - c.running.start_ts) : "0:00:00";
-  $("#clock").style.color = c.running ? "var(--text)" : "var(--faint)";
+  const ps = !c.running && S.ci.paused && D().sessions.find(s => s.uuid === S.ci.paused.session_uuid);
+  $("#clock").textContent = c.running ? fmtHMS(c.n - c.running.start_ts) : ps ? fmtHMS((ps.end_ts || c.n) - ps.start_ts) : "0:00:00";
+  $("#clock").style.color = c.running ? "var(--text)" : ps ? "var(--danger)" : "var(--faint)";
+  const st = ciStatus(c.n), chip = $("#ciChip");
+  chip.textContent = st.state === "ok" ? `Note due in ${Math.ceil(st.left / 60)} min`
+    : st.state === "due" ? `Note due · pauses in ${Math.ceil(st.left / 60)} min`
+    : st.state === "paused" || st.state === "pause" ? "Paused · add a note" : "";
+  chip.style.color = st.state === "due" ? "var(--warn)" : st.state === "ok" ? "var(--faint)" : "var(--danger)";
   const tot = $("#totals");
   if (tot) tot.textContent = `${fmtHM(c.totalToday)} tracked today · ${fmtHM(c.totalWeek)} this week`;
   for (const el of document.querySelectorAll("#tiles [data-task]")) {
@@ -430,6 +482,7 @@ function live() {                     // once a second: clock, tiles, counters
     el.querySelector('[data-live="meta"]').textContent = i.meta;
   }
   renderCounters(c);
+  ciTick();
 }
 
 // ------------------------------------------------------------ actions ----
@@ -469,7 +522,8 @@ async function tapTask(u) {
 
 async function stopRunning() {
   const r = running();
-  if (!r) return;
+  S.ci.paused = null; closeCheckin();
+  if (!r) return renderAll();
   const op = closeSession(r, now());
   renderAll();
   await enqueue(op);
@@ -479,6 +533,14 @@ async function stopRunning() {
 async function addNote() {
   const inp = $("#noteIn"), text = inp.value.trim();
   if (!text) return;
+  if (!running() && S.ci.paused) {
+    inp.value = ""; inp.blur(); closeCheckin();
+    const ops = noteWhilePaused(text);
+    renderAll();
+    for (const op of ops) await enqueue(op);
+    LS.set("cache", S.data);
+    return;
+  }
   let target = running();
   if (!target) {                       // typed it, pressed Stop, then Add: the session that just ended
     const n = now();
@@ -508,6 +570,130 @@ async function logMood(m) {
   D().moods.push(row);
   renderMoods();
   await enqueue({ m: "POST", p: "moods?on_conflict=user_id,uuid", b: [row], prefer: UPSERT });
+  LS.set("cache", S.data);
+}
+
+// not-to-do: one tap = one slip; a second tap straight after undoes it
+async function logSlip(u) {
+  const n = now(), un = S.slipUndo;
+  if (un && un.task === u && un.until > n) {
+    S.slipUndo = null;
+    D().reps = D().reps.filter(r => r.uuid !== un.uuid);
+    renderAv();
+    await enqueue({ m: "PATCH", p: `reps?uuid=eq.${un.uuid}`, b: { deleted: true }, prefer: "return=minimal" });
+    LS.set("cache", S.data);
+    return;
+  }
+  const row = { uuid: uuid(), task_uuid: u, ts: n, count: 1, secs: 0 };
+  D().reps.push(row);
+  S.slipUndo = { task: u, uuid: row.uuid, until: n + SLIP_UNDO };
+  renderAv();
+  setTimeout(() => { if ($("#av")) renderAv(); }, SLIP_UNDO * 1000 + 100);
+  await enqueue({ m: "POST", p: "reps?on_conflict=user_id,uuid", b: [row], prefer: UPSERT });
+  LS.set("cache", S.data);
+}
+
+// --------------------------------------------------------- check-ins ----
+// Same rule as the PC: while a timer runs, ask for a note after `checkin_prompt`
+// minutes without one; still nothing after `checkin_pause` minutes = pause the timer
+// until there's a note. Never pauses out of the blue: it always asks first.
+function ciStatus(n = now()) {
+  const r = running();
+  if (r && S.ci.paused) S.ci.paused = null;               // a timer started somewhere: carry on
+  if (pref("checkin_on") !== "1") return { state: "off" };
+  if (!r) return S.ci.paused ? { state: "paused", ...S.ci.paused } : { state: "idle" };
+  const t = taskBy(r.task_uuid);
+  if (t && !t.billable) return { state: "exempt" };       // breaks don't need notes
+  const since = Math.max(r.start_ts, ...D().notes.filter(x => x.session_uuid === r.uuid).map(x => x.ts));
+  const [a, b] = ciLimits(), el = n - since;
+  let st;
+  if (el < a * 60) st = { state: "ok", left: a * 60 - el };
+  else if (el < b * 60) st = { state: "due", left: b * 60 - el };
+  else {
+    const waited = S.ci.since === since ? n - S.ci.at : 0;
+    st = waited < CHECKIN_GRACE ? { state: "due", left: CHECKIN_GRACE - waited } : { state: "pause", left: 0 };
+  }
+  return { ...st, since, session: r, task: t };
+}
+
+let ciBusy = false;
+async function ciTick() {
+  if (!S.auth || ciBusy || !$("#main")) return;
+  const st = ciStatus();
+  if (st.state === "due") {
+    if (S.ci.since !== st.since) { S.ci.since = st.since; S.ci.at = now(); openCheckin(st); }
+    else updateCheckin(st);
+  } else if (st.state === "pause") {
+    ciBusy = true;
+    try {
+      await load();                                       // a note may have come from the PC
+      const st2 = ciStatus();
+      if (st2.state !== "pause") return;
+      const r = st2.session, op = closeSession(r, now());
+      S.ci.paused = { task_uuid: r.task_uuid, session_uuid: r.uuid, at: r.end_ts };
+      openCheckin(ciStatus());
+      renderAll();
+      await enqueue(op);
+      LS.set("cache", S.data);
+    } finally { ciBusy = false; }
+  } else if (st.state !== "paused") closeCheckin();
+}
+
+function openCheckin(st) {
+  const el = $("#ci"), paused = st.state === "paused";
+  const t = paused ? taskBy(st.task_uuid) : st.task;
+  const typed = $("#ciText") ? $("#ciText").value : "";
+  el.innerHTML = `<div class="panel ci${paused ? " paused" : ""}">
+    <div class="row2" style="margin-top:0"><span class="caps"${paused ? ' style="color:var(--danger)"' : ""}>${paused ? "Timer paused" : "Check-in"}</span>
+      <span class="small" style="color:${t ? t.color : "var(--muted)"};font-weight:600">● ${esc(t ? t.name : "")}</span></div>
+    <h3 class="ci-q">${esc(paused ? "Add a note to carry on" : QUESTIONS[Math.floor(Math.random() * QUESTIONS.length)])}</h3>
+    <div class="small muted" id="ciSub"></div>
+    <textarea id="ciText" rows="3" placeholder="e.g. Drafted the RFI responses"></textarea>
+    <button class="btn${paused ? " danger" : ""}" id="ciSave">${paused ? "Save &amp; resume" : "Save note"}</button>
+    <button class="link block" id="ciLater">${paused ? "Leave it paused" : "Not now"}</button></div>`;
+  $("#ciText").value = typed;
+  el.classList.remove("hidden");
+  updateCheckin(st);
+  $("#ciSave").onclick = () => saveCheckin();
+  $("#ciLater").onclick = () => closeCheckin();
+}
+function updateCheckin(st) {
+  const sub = $("#ciSub");
+  if (!sub || $("#ci").classList.contains("hidden")) return;
+  sub.textContent = st.state === "paused"
+    ? `No note for ${ciLimits()[1]} minutes, so the timer is paused. Write what you've been doing and it picks up again.`
+    : `Last note ${fmtClock(st.since)} · the timer pauses in ${mmss(st.left)}`;
+}
+function closeCheckin() { const el = $("#ci"); if (el) { el.classList.add("hidden"); el.innerHTML = ""; } }
+
+// a note for the paused session (at the moment it paused), then the same task again
+function noteWhilePaused(text) {
+  const p = S.ci.paused, n = now(), ops = [];
+  S.ci.paused = null;
+  const note = { uuid: uuid(), session_uuid: p.session_uuid, ts: Math.min(n, p.at), text };
+  D().notes.push(note);
+  ops.push({ m: "POST", p: "session_notes?on_conflict=user_id,uuid", b: [note], prefer: UPSERT });
+  const t = taskBy(p.task_uuid);
+  if (t && !t.archived) {
+    const s = { uuid: uuid(), task_uuid: p.task_uuid, start_ts: n, end_ts: null, note: "" };
+    D().sessions.push(s);
+    ops.push({ m: "POST", p: "sessions?on_conflict=user_id,uuid", b: [s], prefer: UPSERT });
+  }
+  return ops;
+}
+async function saveCheckin() {
+  const ta = $("#ciText"), text = ta.value.trim();
+  if (!text) { ta.focus(); $("#ciSub").style.color = "var(--warn)"; return; }
+  const r = running();
+  let ops = [];
+  if (r) {
+    const note = { uuid: uuid(), session_uuid: r.uuid, ts: now(), text };
+    D().notes.push(note);
+    ops.push({ m: "POST", p: "session_notes?on_conflict=user_id,uuid", b: [note], prefer: UPSERT });
+  } else if (S.ci.paused) ops = noteWhilePaused(text);
+  closeCheckin();
+  renderAll();
+  for (const op of ops) await enqueue(op);
   LS.set("cache", S.data);
 }
 
@@ -644,7 +830,7 @@ async function handleReturn() {
     saveTokens({ access_token: at, refresh_token: rt, expires_at: +h.get("expires_at") || null,
                  expires_in: +h.get("expires_in") || 3600, user: { email: jwtEmail(at) } });
     LS.del("handoff");
-    S.data = { views: [], tasks: [], sessions: [], notes: [], moods: [], reps: [], overrides: [] };
+    S.data = EMPTY();
     return { signedIn: true };
   }
   renderParked("", true);
@@ -678,7 +864,7 @@ async function claimHandoff() {
     try {
       saveTokens(await authPost("/auth/v1/token?grant_type=refresh_token", { refresh_token: rt }));
     } catch (e) { renderSignIn(e.message || "Sign-in expired. Try again."); return; }
-    S.data = { views: [], tasks: [], sessions: [], notes: [], moods: [], reps: [], overrides: [] };
+    S.data = EMPTY();
     app.innerHTML = "";
     renderAll();
     load();
@@ -694,6 +880,7 @@ function signOut() {
 
 // --------------------------------------------------------------- boot ----
 (async function boot() {
+  document.body.insertAdjacentHTML("beforeend", '<div id="ci" class="sheet hidden" role="dialog" aria-modal="true"></div>');
   const ret = await handleReturn();
   if (ret && ret.parked) return;                 // this Safari page only passes the sign-in on
   if (ret && ret.error) renderSignIn(ret.error); else renderAll();
