@@ -87,7 +87,20 @@ input { font: inherit; color: var(--text); }
 .ex .rec { font-size: 11px; color: var(--faint); }
 .ex .rec.new { color: var(--gold); }
 
-/* forms (setup / sign in) */
+/* welcome / sign in */
+.welcome { max-width: 380px; margin: 0 auto; min-height: 78vh; display: flex; flex-direction: column;
+  justify-content: center; text-align: center; }
+.welcome .logo { width: 88px; height: 88px; border-radius: 20px; margin: 0 auto 20px;
+  box-shadow: 0 8px 30px rgba(10, 132, 255, .18); }
+.welcome h1 { margin: 0 0 8px; font-size: 30px; font-weight: 700; letter-spacing: -.01em; }
+.welcome .lead { color: var(--muted); margin: 0 0 26px; font-size: 16px; line-height: 1.4; }
+.welcome .fine { color: var(--faint); font-size: 13px; margin: 14px 0 0; }
+.welcome .btn { margin-top: 0; padding: 15px; font-size: 17px; }
+.welcome .btn.secondary { margin-top: 10px; }
+.welcome .waiting { justify-content: center; margin: 0 0 22px; }
+.welcome .err:empty { display: none; }
+
+/* forms */
 .form { max-width: 420px; margin: 8vh auto 0; }
 .form h2 { margin: 0 0 6px; font-size: 24px; }
 .form p { color: var(--muted); margin: 0 0 14px; }

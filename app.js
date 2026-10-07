@@ -3,13 +3,17 @@
 // what's left on counted tasks' daily targets, This week = weekly target minus
 // counted time. No build step, no libraries.
 
-const VERSION = "1.1.0";
+const VERSION = "1.2.0";
 const UPSERT = "resolution=merge-duplicates,return=minimal";
 const MOODS = [["Productive", "#30d158"], ["Focused", "#0a84ff"], ["Okay", "#8e8e93"],
                ["Distracted", "#ff9f0a"], ["Unmotivated", "#ff453a"], ["Tired", "#bf5af2"]];
 const REFRESH_EVERY = 20;          // seconds between pulls while the app is open
 const DOUBLE_TAP = 0.7, MOOD_UNDO = 15, NOTE_GRACE = 120, MIN_SESSION = 3;
 const HANDOFF_FOR = 600;           // seconds a Google sign-in may take to come back
+// Simon's Supabase project. The publishable key is meant to be public: it only lets
+// people try to sign in. Data is protected by Google sign-in + row-level security.
+const CLOUD = { url: "https://stggkftvuzwsserlervg.supabase.co",
+                key: "sb_publishable_EeQRPoX0w5f7r-HI69PvMg_sRG-MA8_" };
 
 // ------------------------------------------------------------ storage ----
 const LS = {
@@ -19,7 +23,7 @@ const LS = {
 };
 
 const S = {
-  cfg: LS.get("cfg"),                       // {url, key}
+  cfg: LS.get("cfg") || CLOUD,              // {url, key}; a saved one only for testing
   auth: LS.get("auth"),                     // {access_token, refresh_token, expires_at, email}
   view: LS.get("view", null),               // view uuid or "all"
   data: LS.get("cache", null) || { views: [], tasks: [], sessions: [], notes: [], moods: [], reps: [], overrides: [] },
@@ -44,7 +48,6 @@ function fmtQty(v, unit) { const n = Math.round(v * 1000) / 1000; const t = Numb
 const clip = (s, e, a, b) => Math.max(0, Math.min(e, b) - Math.max(s, a));
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const randomHex = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => b.toString(16).padStart(2, "0")).join("");
-const b64url = s => btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 function jwtEmail(t) {
   try { return JSON.parse(atob(t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).email || ""; } catch { return ""; }
 }
@@ -247,7 +250,6 @@ const $ = s => document.querySelector(s);
 const app = $("#app");
 
 function renderAll() {
-  if (!S.cfg) return renderSetup();
   if (!S.auth) return renderSignIn();
   if (!$("#main")) {
     app.innerHTML = `
@@ -278,10 +280,10 @@ function renderAll() {
     $("#seg").onclick = e => { const b = e.target.closest("[data-view]"); if (b) { S.view = b.dataset.view; LS.set("view", S.view); renderAll(); } };
     $("#moods").onclick = e => { const b = e.target.closest("[data-mood]"); if (b) logMood(b.dataset.mood); };
     $("#ex").onclick = e => { const b = e.target.closest("[data-ex]"); if (b) openPad(b.dataset.ex); };
-    $("#foot").onclick = e => { if (e.target.id === "signOut") signOut(); if (e.target.id === "syncNow") load(); };
+    $("#foot").onclick = e => { if (e.target.id === "signOut") signOut(); };
   }
   renderHead(); renderSeg(); renderNow(); renderTiles(); renderEx(); renderMoods(); live();
-  $("#foot").innerHTML = `Signed in as ${esc(S.auth.email)} · <button id="syncNow">Sync now</button> · <button id="signOut">Sign out</button><br>PATT mobile ${VERSION}`;
+  $("#foot").innerHTML = `Signed in as ${esc(S.auth.email)} · <button id="signOut">Sign out</button><br>PATT mobile ${VERSION}`;
 }
 
 function renderHead() {
@@ -458,7 +460,7 @@ async function tapTask(u) {
   if (!r || r.task_uuid !== u) {
     const s = { uuid: uuid(), task_uuid: u, start_ts: n, end_ts: null, note: "" };
     D().sessions.push(s);
-    ops.push({ m: "POST", p: "sessions?on_conflict=uuid", b: [s], prefer: UPSERT });
+    ops.push({ m: "POST", p: "sessions?on_conflict=user_id,uuid", b: [s], prefer: UPSERT });
   }
   renderAll();
   for (const op of ops) await enqueue(op);
@@ -488,7 +490,7 @@ async function addNote() {
   inp.value = "";
   inp.blur();
   renderNow();
-  await enqueue({ m: "POST", p: "session_notes?on_conflict=uuid", b: [note], prefer: UPSERT });
+  await enqueue({ m: "POST", p: "session_notes?on_conflict=user_id,uuid", b: [note], prefer: UPSERT });
   LS.set("cache", S.data);
 }
 
@@ -505,7 +507,7 @@ async function logMood(m) {
   const row = { uuid: uuid(), ts: n, mood: m, session_uuid: r ? r.uuid : null };
   D().moods.push(row);
   renderMoods();
-  await enqueue({ m: "POST", p: "moods?on_conflict=uuid", b: [row], prefer: UPSERT });
+  await enqueue({ m: "POST", p: "moods?on_conflict=user_id,uuid", b: [row], prefer: UPSERT });
   LS.set("cache", S.data);
 }
 
@@ -568,33 +570,11 @@ async function logReps(t, v) {
   const row = { uuid: uuid(), task_uuid: t.uuid, ts: now(), count: Math.round(v * 1000) / 1000 };
   D().reps.push(row);
   renderPad();
-  await enqueue({ m: "POST", p: "reps?on_conflict=uuid", b: [row], prefer: UPSERT });
+  await enqueue({ m: "POST", p: "reps?on_conflict=user_id,uuid", b: [row], prefer: UPSERT });
   LS.set("cache", S.data);
 }
 
-// --------------------------------------------------------- setup/auth ----
-function parseSetup(code) {
-  let c = (code || "").replace(/\s+/g, "");
-  if (c.startsWith("PATT1:")) c = c.slice(6);
-  const pad = "=".repeat((4 - c.length % 4) % 4);
-  const j = JSON.parse(atob((c + pad).replace(/-/g, "+").replace(/_/g, "/")));
-  if (!j.u || !j.k || !/^https:\/\/|^http:\/\/127\.0\.0\.1/.test(j.u)) throw new Error("bad code");
-  return { url: j.u.replace(/\/$/, ""), key: j.k };
-}
-
-function renderSetup(err = "") {
-  app.innerHTML = `<div class="form">
-    <h2>Set up PATT</h2>
-    <p>Paste the setup code (it starts with <b>PATT1:</b>). It's the same code you used in PATT on your PC.</p>
-    <label for="code">Setup code</label><textarea id="code" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
-    <button class="btn" id="go">Continue</button><div class="err">${esc(err)}</div></div>`;
-  $("#go").onclick = () => {
-    try { S.cfg = parseSetup($("#code").value); LS.set("cfg", S.cfg); renderAll(); }
-    catch { renderSetup("That doesn't look like a PATT setup code."); }
-  };
-}
-
-function setupCode(cfg) { return "PATT1:" + b64url(JSON.stringify({ u: cfg.url, k: cfg.key })); }
+// --------------------------------------------------------------- sign in ----
 const appUrl = () => location.origin + location.pathname;
 function pendingHandoff() {
   const p = LS.get("handoff");
@@ -602,24 +582,26 @@ function pendingHandoff() {
   return p;
 }
 
+function screen(inner) {
+  app.innerHTML = `<div class="welcome"><img class="logo" src="icon.svg" alt="">${inner}</div>`;
+}
+
 function renderSignIn(err = "") {
   if (pendingHandoff()) return renderWaiting();
-  app.innerHTML = `<div class="form">
-    <h2>Sign in</h2><p>Use the same Google account as PATT on your PC.</p>
+  screen(`<h1>PATT</h1>
+    <p class="lead">Your time tracker, in step with PATT on your PC.</p>
     <button class="btn google" id="google">Continue with Google</button>
     <div class="err">${esc(err)}</div>
-    <button class="link small" id="reset">Use a different setup code</button></div>`;
+    <p class="fine">Use the same Google account you signed in with on your PC.</p>`);
   $("#google").onclick = () => googleSignIn();
-  $("#reset").onclick = () => { S.cfg = null; LS.del("cfg"); renderAll(); };
 }
 
 function renderWaiting() {
-  app.innerHTML = `<div class="form">
-    <h2>Finish signing in</h2>
-    <p>Choose your Google account in the page that opened. If it finishes in Safari, just come
-       back here afterwards. PATT picks up the sign-in by itself.</p>
+  screen(`<h1>Finish signing in</h1>
+    <p class="lead">Choose your Google account in the page that opened. If it ends up in Safari,
+       just come back here. PATT picks it up by itself.</p>
     <div class="waiting"><span class="dot busy"></span> Waiting for Google…</div>
-    <button class="btn secondary" id="cancelG">Cancel</button></div>`;
+    <button class="btn secondary" id="cancelG">Cancel</button>`);
   $("#cancelG").onclick = () => { LS.del("handoff"); renderAll(); };
 }
 
@@ -631,15 +613,15 @@ function renderWaiting() {
 function googleSignIn() {
   const code = randomHex(32);
   LS.set("handoff", { code, t: now() });
-  const back = `${appUrl()}?handoff=${code}&s=${encodeURIComponent(setupCode(S.cfg))}`;
+  const back = `${appUrl()}?handoff=${code}`;
   renderWaiting();
-  location.href = `${S.cfg.url}/auth/v1/authorize?provider=google&redirect_to=${encodeURIComponent(back)}`;
+  location.href = `${S.cfg.url}/auth/v1/authorize?provider=google&prompt=select_account` +
+                  `&redirect_to=${encodeURIComponent(back)}`;
 }
 
 function renderParked(err = "", busy = false) {
-  app.innerHTML = `<div class="form">
-    <h2>${err ? "Couldn't finish signing in" : busy ? "Signing in…" : "You're signed in ✓"}</h2>
-    <p>${err ? esc(err) : busy ? "One moment." : "Now go back to <b>PATT on your Home Screen</b>. It finishes signing in by itself. You can close this page."}</p></div>`;
+  screen(`<h1>${err ? "Couldn't finish signing in" : busy ? "Signing in…" : "You're signed in ✓"}</h1>
+    <p class="lead">${err ? esc(err) : busy ? "One moment." : "Now go back to <b>PATT on your Home Screen</b>. It finishes signing in by itself. You can close this page."}</p>`);
 }
 
 async function handleReturn() {
@@ -649,8 +631,7 @@ async function handleReturn() {
   const err = h.get("error_description") || h.get("error") || q.get("error_description") || q.get("error");
   if (!code && !at && !err) return null;
   history.replaceState(null, "", location.pathname);          // keep tokens out of history
-  let cfg = S.cfg;
-  if (!cfg && q.get("s")) { try { cfg = parseSetup(q.get("s")); } catch { /* ignore */ } }
+  const cfg = S.cfg;
   const pend = LS.get("handoff");
   const here = !code || (pend && pend.code === code);         // back in the app that asked
   if (err) {
@@ -658,9 +639,8 @@ async function handleReturn() {
     renderParked(err.replace(/\+/g, " "));
     return { parked: true };
   }
-  if (!at || !rt || !cfg) return here ? { error: "Google sign-in didn't complete. Try again." } : null;
+  if (!at || !rt) return here ? { error: "Google sign-in didn't complete. Try again." } : null;
   if (here) {
-    S.cfg = cfg; LS.set("cfg", cfg);
     saveTokens({ access_token: at, refresh_token: rt, expires_at: +h.get("expires_at") || null,
                  expires_in: +h.get("expires_in") || 3600, user: { email: jwtEmail(at) } });
     LS.del("handoff");
@@ -683,7 +663,7 @@ async function handleReturn() {
 let claiming = false;
 async function claimHandoff() {
   const pend = pendingHandoff();
-  if (!pend || !S.cfg || S.auth || claiming) return;
+  if (!pend || S.auth || claiming) return;
   claiming = true;
   try {
     let r;
@@ -714,14 +694,9 @@ function signOut() {
 
 // --------------------------------------------------------------- boot ----
 (async function boot() {
-  const m = location.hash.match(/setup=([^&]+)/);
-  if (m) {
-    try { S.cfg = parseSetup(decodeURIComponent(m[1])); LS.set("cfg", S.cfg); } catch {}
-    history.replaceState(null, "", location.pathname);
-  }
   const ret = await handleReturn();
   if (ret && ret.parked) return;                 // this Safari page only passes the sign-in on
-  if (ret && ret.error && S.cfg) renderSignIn(ret.error); else renderAll();
+  if (ret && ret.error) renderSignIn(ret.error); else renderAll();
   load();
   claimHandoff();
   setInterval(live, 1000);
