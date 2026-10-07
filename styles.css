@@ -99,6 +99,10 @@ input { font: inherit; color: var(--text); }
 .btn { display: block; width: 100%; padding: 13px; border-radius: 14px; background: var(--accent);
   color: white; font-weight: 600; margin-top: 16px; }
 .btn.secondary { background: var(--tile); color: var(--text); margin-top: 8px; }
+.btn.google { background: #fff; color: #1f1f1f; }
+.waiting { display: flex; align-items: center; gap: 8px; color: var(--muted); margin-top: 18px; }
+.waiting .dot { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
 .link { color: var(--accent); padding: 8px 0; }
 .err { color: var(--warn); font-size: 13px; margin-top: 10px; min-height: 1em; }
 
